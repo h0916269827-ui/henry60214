@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>網頁巡檢系統 - 缺失改善通知單</title>
+    <!-- 改用 html2canvas + jsPDF 直接控制，支援橫直式混合 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        /* ===== 手機 UI 樣式 ===== */
+        :root { --primary: #0056b3; --success: #28a745; --bg: #f4f7f6; --card: #ffffff; --border: #ddd; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); color: #333; margin: 0; padding: 15px; }
+        .ui-container { max-width: 600px; margin: 0 auto; }
+        h2 { text-align: center; color: var(--primary); font-size: 22px; margin-bottom: 20px; }
+        .card { background: var(--card); padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        .section-title { background: #e9ecef; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-weight: bold; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; font-size: 15px; }
+        input[type="text"], input[type="date"], textarea, select { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 4px; font-size: 16px; }
+        textarea { height: 70px; resize: vertical; }
+
+        .defect-item { border: 2px solid #e0e0e0; padding: 15px; border-radius: 6px; margin-bottom: 15px; background: #fafbfc; }
+        .defect-header { font-weight: bold; color: var(--primary); margin-bottom: 10px; font-size: 18px; border-bottom: 2px solid var(--primary); padding-bottom: 5px; }
+        .stage-box { background: #fff; padding: 10px; border: 1px solid #ccc; border-radius: 6px; margin-bottom: 15px; }
+        .stage-title { font-weight: bold; color: #555; margin-bottom: 10px; font-size: 16px; }
+
+        .photo-upload-btn { display: block; background: #e2e8f0; color: #333; text-align: center; padding: 15px; border-radius: 6px; border: 2px dashed #a0aec0; cursor: pointer; font-weight: bold; margin-bottom: 10px; }
+        .photo-upload-btn input[type="file"] { display: none; }
+        .photo-preview-canvas { display: none; width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--border); }
+
+.btn-add    { background: var(--success); color: white; border: none; padding: 12px; font-size: 16px; border-radius: 4px; width: 100%; font-weight: bold; margin-bottom: 20px; cursor: pointer; }
+        .btn-submit { background: #dc3545; color: white; border: none; padding: 15px; font-size: 18px; border-radius: 4px; width: 100%; font-weight: bold; cursor: pointer; }
+        /* 改善回報折疊按鈕 */
+        .btn-toggle-improve { width: 100%; background: #fff8e1; color: #795548; border: 1px dashed #ffb300; padding: 10px 14px; font-size: 14px; font-weight: bold; border-radius: 4px; cursor: pointer; margin: 5px 0 8px 0; text-align: left; }
+        .improve-section { background: #fffde7; border: 1px dashed #ffb300; border-radius: 6px; padding: 10px; margin-top: 5px; }
+
+        /* ===== PDF 模板通用（隱藏渲染區）===== */
+        .pdf-wrapper {
+            display: none;
+            position: fixed;
+            left: -9999px;
+            top: 0;
+            background: white;
+            font-family: 'DFKai-SB', '標楷體', serif;
+            color: #000;
+        }
+
+        /* ===== 第一頁：橫式 A4 (1060×727px，比例對齊 8mm 白邊後的可印區) ===== */
+        #pdf-page1 {
+            width: 1060px;
+            height: 727px;
+            padding: 20px 35px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ===== 照片頁：直式 A4 (750×1090px，比例對齊 8mm 白邊後的可印區) ===== */
+        #pdf-photo {
+            width: 750px;
+            height: 1090px;
+            padding: 18px 26px 15px 26px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* CECI 頁首 */
+        .ceci-header { display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
+        .ceci-logo-img { height: 58px; width: auto; }
+
+        /* 通知單標題 */
+        .p1-title { text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 6px; margin: 6px 0 10px 0; }
+        /* 照片表標題 */
+        .photo-title { text-align: center; font-size: 22px; font-weight: bold; letter-spacing: 6px; margin: 4px 0 8px 0; }
+        .doc-number-line { text-align: right; font-size: 12px; font-family: Arial, sans-serif; margin-bottom: 2px; }
+
+        /* 通用表格 */
+        .ft { width: 100%; border-collapse: collapse; }
+        .ft td, .ft th { border: 1px solid #222; font-size: 13px; vertical-align: middle; }
+
+        /* 第一頁表格 */
+        .p1-date-cell  { padding: 15px 12px; font-size: 13px; }
+        .p1-cat-cell   { padding: 15px 12px; font-size: 13px; text-align: right; white-space: nowrap; width: 140px; }
+        .p1-th         { background: #f5f5f5; text-align: center; font-weight: bold; padding: 9px 8px; width: 68px; font-size: 13px; }
+        .p1-td         { padding: 12px; font-size: 13px; vertical-align: top; }
+        .p1-td-reason  { padding: 12px; font-size: 13px; vertical-align: top; height: 195px; }
+        .p1-td-handling { padding: 12px; font-size: 13px; vertical-align: top; height: 60px; }
+        .p1-td-deadline { padding: 12px; font-size: 13px; vertical-align: top; height: 60px; }
+        .p1-td-project  { padding: 12px; font-size: 13px; vertical-align: top; height: 60px; }
+        .p1-unit-label {
+            writing-mode: vertical-rl;
+            text-orientation: upright;
+            text-align: center;
+            font-weight: bold;
+            font-size: 13px;
+            letter-spacing: 4px;
+            width: 42px;
+            height: 150px;
+            background: #f5f5f5;
+            padding: 6px 4px;
+        }
+        .p1-unit-sig { padding: 9px 12px; vertical-align: top; }
+
+        /* 照片表格 */
+        .photo-project-cell {
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            text-align: center;
+            font-size: 12px;
+            letter-spacing: 2px;
+            width: 50px;      /* 7. 工程名稱欄加寬 */
+            padding: 8px 6px;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        .photo-img-cell { width: 455px; text-align: center; vertical-align: middle; padding: 8px; height: 290px; }
+        .photo-img-cell img { max-width: 100%; max-height: 275px; object-fit: contain; }
+        .photo-img-empty { color: #aaa; font-size: 12px; }
+        .photo-text-cell { vertical-align: top !important; padding: 12px 16px; font-size: 14px; line-height: 1.8; }
+        .photo-stage-lbl { font-weight: bold; margin-bottom: 6px; font-size: 16px; }
+    </style>
+</head>
+<body>
+
+<!-- ===== 手機操作介面 ===== -->
+<div class="ui-container">
+    <h2>缺失改善通知單 輸入端</h2>
+
+
+    <div class="card">
+        <div class="section-title">基本資訊</div>
+        <div class="form-group"><label>工程名稱</label><input type="text" id="ui-projectName" value="臺南市虎尾寮污水下水道系統分支管網及用戶接管工程第二標"></div>
+        <div class="form-group"><label>通知日期</label><input type="date" id="ui-noticeDate"></div>
+        <div class="form-group"><label>缺失類別</label>
+            <select id="ui-category">
+                <option value="施工">施工</option>
+                <option value="安衛">安衛</option>
+            </select>
+        </div>
+        <div class="form-group"><label>文件編號（顯示於照片表右上角，如：CA-04B-042）</label><input type="text" id="ui-docNumber" placeholder="選填"></div>
+        <div class="form-group"><label>處理方式</label><textarea id="ui-handling">請儘速進行缺失改善作業，並於7日內改善完成並回覆。</textarea></div>
+        <div class="form-group"><label>改正期限</label><input type="text" id="ui-deadline" value="請於通知7日內改善完成。"></div>
+    </div>
+
+    <div id="ui-defectContainer"></div>
+
+    <button class="btn-add" onclick="addDefect()">+ 新增下一項缺失</button>
+
+    <div class="card">
+        <div class="section-title">單位簽核</div>
+        <div class="form-group"><label>監造單位簽名/代號</label><input type="text" id="ui-supervisor"></div>
+        <div class="form-group"><label>施工單位簽名/代號</label><input type="text" id="ui-contractor"></div>
+    </div>
+
+    <button class="btn-submit" onclick="generatePDF()">📥 匯出正式 PDF 檔</button>
+    <div id="progress-msg" style="text-align:center; margin-top:12px; font-size:14px; color:#555; min-height:20px;"></div>
+</div>
+
+
+<!-- ===== PDF 渲染模板（隱藏在畫面左側極遠處） ===== -->
+
+<!-- 第一頁：橫式 A4 (1060×750) -->
+<div id="pdf-page1" class="pdf-wrapper">
+    <div class="ceci-header">
+        <img id="pdf-logo-p1" class="ceci-logo-img" src="" alt="">
+    </div>
+    <div class="p1-title">缺失改善通知單</div>
+    <table class="ft" style="flex-shrink:0; margin-bottom:-1px;">
+        <tr>
+            <td class="p1-date-cell">通知日期：<span id="pdf-date"></span></td>
+            <td class="p1-cat-cell" id="pdf-cat">■施工　□安衛</td>
+        </tr>
+    </table>
+    <table class="ft" style="flex:1;">
+        <tr>
+            <td class="p1-th">工程名稱</td>
+            <td class="p1-td-project" id="pdf-project" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-th">缺失事由</td>
+            <td class="p1-td-reason" id="pdf-reasons" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-th">處理方式</td>
+            <td class="p1-td-handling" id="pdf-handling" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-th">改正期限</td>
+            <td class="p1-td-deadline" id="pdf-deadline" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-unit-label">監造單位</td>
+            <td class="p1-unit-sig" id="pdf-supervisor" style="width:42%;"></td>
+            <td class="p1-unit-label">施工單位</td>
+            <td class="p1-unit-sig" id="pdf-contractor" style="width:42%;"></td>
+        </tr>
+    </table>
+</div>
+
+<!-- 照片頁：直式 A4 (750×1060)，每次填入一個缺失後截圖 -->
+<div id="pdf-photo" class="pdf-wrapper">
+    <div class="ceci-header">
+        <img id="pdf-logo-ph" class="ceci-logo-img" src="" alt="">
+    </div>
+    <div id="pdf-docnum" class="doc-number-line"></div>
+    <div class="photo-title">不合格改善照片表</div>
+    <table class="ft" id="pdf-photo-table" style="flex:1;">
+        <!-- 動態填入 -->
+    </table>
+</div>
+
+
+<script>
+/* ===== LOGO 管理 ===== */
+localStorage.removeItem('ceci_logo');
+let logoDataURL = 'LOGO.png';
+
+
+/* ===== 缺失項目 UI ===== */
+document.getElementById('ui-noticeDate').valueAsDate = new Date();
+let defectCount = 0;
+
+function createStageHTML(stageKey, stageName, id) {
+    return `
+        <div class="stage-box">
+            <div class="stage-title">📌 ${stageName}</div>
+            <div class="form-group">
+                <input type="text" id="ui-reason-${stageKey}-${id}" placeholder="輸入${stageName}的文字說明...">
+            </div>
+            <label class="photo-upload-btn">
+                <span id="btn-${stageKey}-${id}">📸 點擊拍照或選圖 (${stageName})</span>
+                <input type="file" accept="image/*" onchange="processImage(event,'canvas-${stageKey}-${id}','btn-${stageKey}-${id}')">
+            </label>
+            <canvas id="canvas-${stageKey}-${id}" class="photo-preview-canvas"></canvas>
+        </div>`;
+}
+
+function addDefect() {
+    defectCount++;
+    document.getElementById('ui-defectContainer').insertAdjacentHTML('beforeend', `
+        <div class="defect-item card" id="defect-${defectCount}">
+            <div class="defect-header">缺失項目 ${defectCount}　<small style="font-size:13px;font-weight:normal;color:#666;">（每項缺失＝照片表第 ${defectCount+1} 頁）</small></div>
+            ${createStageHTML('before', '缺失事項', defectCount)}
+            <button class="btn-toggle-improve" onclick="toggleImprove(${defectCount})">
+                ▶ 展開「改善中 / 改善後」回報（完工後再補充，巡檢當下可略）
+            </button>
+            <div id="improve-${defectCount}" style="display:none;" class="improve-section">
+                ${createStageHTML('during', '改善中', defectCount)}
+                ${createStageHTML('after',  '改善後', defectCount)}
+            </div>
+        </div>`);
+}
+addDefect();
+
+function toggleImprove(id) {
+    const el  = document.getElementById(`improve-${id}`);
+    const btn = el.previousElementSibling;
+    if (el.style.display === 'none') {
+        el.style.display = 'block';
+        btn.innerText = '▼ 收合「改善中 / 改善後」';
+    } else {
+        el.style.display = 'none';
+        btn.innerText = '▶ 展開「改善中 / 改善後」回報（完工後再補充，巡檢當下可略）';
+    }
+}
+
+
+/* ===== 照片處理（浮水印日期） ===== */
+function processImage(event, canvasId, btnId) {
+    const file = event.target.files[0];
+    if (!file) return;
+    document.getElementById(btnId).innerText = '🔄 已選取，點擊重拍';
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const MAX = 1280;
+            let w = img.width, h = img.height;
+            if (w > MAX) { h = Math.round(h * MAX / w); w = MAX; }
+            canvas.width = w; canvas.height = h;
+            ctx.drawImage(img, 0, 0, w, h);
+            const fs = Math.max(w * 0.04, 24);
+            ctx.font = `bold ${fs}px Arial`;
+            ctx.fillStyle = 'red';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'bottom';
+            ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
+            const raw = document.getElementById('ui-noticeDate').value;
+            ctx.fillText(raw ? raw.replace(/-/g, '/') : '無日期', w * 0.97, h * 0.97);
+            canvas.style.display = 'block';
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+
+/* ===== PDF 產生（html2canvas + jsPDF 混合方向） ===== */
+async function generatePDF() {
+    const btn = document.querySelector('.btn-submit');
+    const prog = document.getElementById('progress-msg');
+    btn.disabled = true;
+    btn.style.backgroundColor = '#6c757d';
+
+    // 日期轉換
+    const raw = document.getElementById('ui-noticeDate').value;
+    const [year, month, day] = raw.split('-');
+    const twYear = parseInt(year) - 1911;
+    const dateStr = `${twYear}年${parseInt(month)}月${parseInt(day)}日`;
+
+    const category    = document.getElementById('ui-category').value;
+    const catDisplay  = category === '施工' ? '■施工　□安衛' : '□施工　■安衛';
+    const projectName = document.getElementById('ui-projectName').value;
+    const docNumber   = document.getElementById('ui-docNumber').value.trim();
+
+    // ---- 填入第一頁 ----
+    document.getElementById('pdf-logo-p1').src = logoDataURL;
+    document.getElementById('pdf-date').innerText = dateStr;
+    document.getElementById('pdf-cat').innerText  = catDisplay;
+    document.getElementById('pdf-project').innerText  = projectName;
+    document.getElementById('pdf-handling').innerText = document.getElementById('ui-handling').value;
+    document.getElementById('pdf-deadline').innerText = document.getElementById('ui-deadline').value;
+    document.getElementById('pdf-supervisor').innerText = document.getElementById('ui-supervisor').value;
+    document.getElementById('pdf-contractor').innerText = document.getElementById('ui-contractor').value;
+
+    let reasonsHTML = '';
+    for (let i = 1; i <= defectCount; i++) {
+        const r = document.getElementById(`ui-reason-before-${i}`).value || '（未填寫事由）';
+        reasonsHTML += `${i}. ${r}<br>`;
+    }
+    document.getElementById('pdf-reasons').innerHTML = reasonsHTML;
+
+    // ---- 截圖第一頁（橫式 1060×750） ----
+    prog.innerText = '正在排版第 1 頁（通知單）…';
+    const page1el = document.getElementById('pdf-page1');
+    page1el.style.display = 'block';
+    // 等 logo 載入
+    await waitImgLoad(document.getElementById('pdf-logo-p1'));
+    const canvas1 = await html2canvas(page1el, { scale: 2, useCORS: true, logging: false });
+    page1el.style.display = 'none';
+
+    // ---- 建立 jsPDF（第一頁橫式） ----
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    // 8mm 白邊，避免印表機吃邊
+    const mg = 8;
+    pdf.addImage(canvas1.toDataURL('image/jpeg', 0.95), 'JPEG', mg, mg, 297-mg*2, 210-mg*2);
+
+    // ---- 照片頁（直式，每個缺失一頁） ----
+    const photoEl  = document.getElementById('pdf-photo');
+    const photoTbl = document.getElementById('pdf-photo-table');
+
+    for (let i = 1; i <= defectCount; i++) {
+        prog.innerText = `正在排版第 ${i + 1} 頁（照片表 ${i}/${defectCount}）…`;
+
+        // 填入 LOGO 與文件編號
+        document.getElementById('pdf-logo-ph').src = logoDataURL;
+        document.getElementById('pdf-docnum').innerText = docNumber || '';
+
+        // 取得各階段照片與說明
+        const getImg = (stageKey) => {
+            const c = document.getElementById(`canvas-${stageKey}-${i}`);
+            return (c && c.style.display === 'block') ? c.toDataURL('image/jpeg', 0.85) : '';
+        };
+        const getTxt = (stageKey) => document.getElementById(`ui-reason-${stageKey}-${i}`).value || '';
+
+        const imgCell = (src) => src
+            ? `<img src="${src}" style="max-width:100%;max-height:255px;object-fit:contain;">`
+            : `<div class="photo-img-empty">（無照片）</div>`;
+
+        // 建立照片表 HTML
+        photoTbl.innerHTML = `
+            <tr>
+                <td class="photo-project-cell" rowspan="3">工程名稱：${projectName}</td>
+                <td class="photo-img-cell">${imgCell(getImg('before'))}</td>
+                <td class="photo-text-cell">
+                    <div class="photo-stage-lbl">缺失事項：</div>${getTxt('before')}
+                </td>
+            </tr>
+            <tr>
+                <td class="photo-img-cell">${imgCell(getImg('during'))}</td>
+                <td class="photo-text-cell">
+                    <div class="photo-stage-lbl">改善中：</div>${getTxt('during')}
+                </td>
+            </tr>
+            <tr>
+                <td class="photo-img-cell">${imgCell(getImg('after'))}</td>
+                <td class="photo-text-cell">
+                    <div class="photo-stage-lbl">改善後：</div>${getTxt('after')}
+                </td>
+            </tr>`;
+
+        photoEl.style.display = 'block';
+        // 等 LOGO 與所有照片圖片全部載入後再截圖
+        await waitImgLoad(document.getElementById('pdf-logo-ph'));
+        const allImgs = Array.from(photoEl.querySelectorAll('img'));
+        await Promise.all(allImgs.map(img => waitImgLoad(img)));
+        // 給瀏覽器一個 frame 完成 layout
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
+        const photoCanvas = await html2canvas(photoEl, { scale: 2, useCORS: true, logging: false });
+        photoEl.style.display = 'none';
+
+        // 加入直式頁（8mm 白邊）
+        pdf.addPage('a4', 'portrait');
+        pdf.addImage(photoCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', mg, mg, 210-mg*2, 297-mg*2);
+    }
+
+    prog.innerText = '正在儲存 PDF…';
+    pdf.save(`缺失改善通知單_${year}${month}${day}.pdf`);
+
+    btn.disabled = false;
+    btn.style.backgroundColor = '#dc3545';
+    btn.innerText = '📥 匯出正式 PDF 檔';
+    prog.innerText = '✅ PDF 產出完畢！';
+}
+
+/* 等待 img 元素載入完成的輔助函數 */
+function waitImgLoad(imgEl) {
+    return new Promise(resolve => {
+        if (!imgEl || !imgEl.src || imgEl.complete) return resolve();
+        imgEl.onload  = resolve;
+        imgEl.onerror = resolve;
+    });
+}
+</script>
+</body>
+</html>
