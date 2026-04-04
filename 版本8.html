@@ -264,6 +264,7 @@ function uploadLogo(event) {
 function refreshLogoUI() {
     const preview = document.getElementById('logo-preview');
     const status  = document.getElementById('logo-status');
+    if (!preview || !status) return;   // 元素不在頁面上時安全跳出，不中斷後續 JS
     if (logoDataURL) {
         preview.src = logoDataURL;
         preview.style.display = 'block';
