@@ -514,7 +514,7 @@ async function generatePDF() {
     // iOS/Android：用系統分享介面直接帶 PDF 檔，不產生 blob URL
     if (navigator.canShare && navigator.canShare({ files: [new File([pdfBlob], fileName, { type: 'application/pdf' })] })) {
         const file = new File([pdfBlob], fileName, { type: 'application/pdf' });
-        await navigator.share({ files: [file], title: fileName });
+        await navigator.share({ files: [file] });
     } else {
         // 桌機瀏覽器：原本的下載方式
         pdf.save(fileName);
