@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- ===== 一勞永逸：防止手機瀏覽器快取舊版本（第一層：HTTP Meta 禁用快取）===== -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>網頁巡檢系統 - 缺失改善通知單</title>
+    <!-- ===== 一勞永逸：防快取（第二層：URL 時間戳，每次開啟都是全新請求）===== -->
+    <script>
+    (function(){
+        // 若 URL 沒有 _t 參數，就補上當下時間戳後重導向
+        // → 瀏覽器視為全新網址，強制重新下載最新檔案，永不讀舊快取
+        var url = new URL(location.href);
+        if (!url.searchParams.has('_t')) {
+            url.searchParams.set('_t', Date.now());
+            location.replace(url.toString());
+        }
+    })();
+    </script>
+    <!-- 改用 html2canvas + jsPDF 直接控制，支援橫直式混合 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        /* ===== 手機 UI 樣式 ===== */
+        :root { --primary: #0056b3; --success: #28a745; --bg: #f4f7f6; --card: #ffffff; --border: #ddd; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); color: #333; margin: 0; padding: 15px; }
+        .ui-container { max-width: 600px; margin: 0 auto; }
+        h2 { text-align: center; color: var(--primary); font-size: 22px; margin-bottom: 20px; }
+        .card { background: var(--card); padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 15px; }
+        .section-title { background: #e9ecef; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-weight: bold; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; font-size: 15px; }
+        input[type="text"], textarea, select { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 4px; font-size: 16px; }
+        /* 日期選擇器：三欄並排，各欄 select 用共同規則繼承，這裡只加佈局 */
+        .date-picker-row { display: flex; gap: 6px; }
+        .date-picker-row select { flex: 1; min-width: 0; padding: 10px 6px; font-size: 15px; }
+        textarea { height: 70px; resize: vertical; }
+
+        .defect-item { border: 2px solid #e0e0e0; padding: 15px; border-radius: 6px; margin-bottom: 15px; background: #fafbfc; }
+        .defect-header { font-weight: bold; color: var(--primary); margin-bottom: 10px; font-size: 18px; border-bottom: 2px solid var(--primary); padding-bottom: 5px; }
+        .stage-box { background: #fff; padding: 10px; border: 1px solid #ccc; border-radius: 6px; margin-bottom: 15px; }
+        .stage-title { font-weight: bold; color: #555; margin-bottom: 10px; font-size: 16px; }
+
+        .photo-upload-btn { display: block; background: #e2e8f0; color: #333; text-align: center; padding: 15px; border-radius: 6px; border: 2px dashed #a0aec0; cursor: pointer; font-weight: bold; margin-bottom: 10px; }
+        .photo-upload-btn input[type="file"] { display: none; }
+        .photo-preview-canvas { display: none; width: 100%; height: auto; border-radius: 6px; border: 1px solid var(--border); }
+
+        /* Logo 上傳區 */
+        .logo-upload-area { display: inline-block; background: #e2e8f0; color: #333; padding: 10px 18px; border-radius: 6px; border: 2px dashed #a0aec0; cursor: pointer; font-weight: bold; }
+        .logo-upload-area input[type="file"] { display: none; }
+
+        .btn-add    { background: var(--success); color: white; border: none; padding: 12px; font-size: 16px; border-radius: 4px; width: 100%; font-weight: bold; margin-bottom: 20px; cursor: pointer; }
+        .btn-submit { background: #dc3545; color: white; border: none; padding: 15px; font-size: 18px; border-radius: 4px; width: 100%; font-weight: bold; cursor: pointer; }
+        /* 改善回報折疊按鈕 */
+        .btn-toggle-improve { width: 100%; background: #fff8e1; color: #795548; border: 1px dashed #ffb300; padding: 10px 14px; font-size: 14px; font-weight: bold; border-radius: 4px; cursor: pointer; margin: 5px 0 8px 0; text-align: left; }
+        .improve-section { background: #fffde7; border: 1px dashed #ffb300; border-radius: 6px; padding: 10px; margin-top: 5px; }
+
+        /* ===== PDF 模板通用（隱藏渲染區）===== */
+        .pdf-wrapper {
+            display: none;
+            position: fixed;
+            left: -9999px;
+            top: 0;
+            background: white;
+            font-family: 'DFKai-SB', '標楷體', serif;
+            color: #000;
+        }
+
+        /* ===== 第一頁：橫式 A4 (1060×727px，比例對齊 8mm 白邊後的可印區) ===== */
+        #pdf-page1 {
+            width: 1060px;
+            height: 727px;
+            padding: 20px 35px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ===== 照片頁：直式 A4 (750×1090px，比例對齊 8mm 白邊後的可印區) ===== */
+        #pdf-photo {
+            width: 750px;
+            height: 1090px;
+            padding: 18px 26px 15px 26px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* CECI 頁首 */
+        .ceci-header { display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
+        .ceci-logo-img { height: 58px; width: auto; }
+
+        /* 通知單標題 */
+        .p1-title { text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 6px; margin: 6px 0 10px 0; }
+        /* 照片表標題 */
+        .photo-title { text-align: center; font-size: 22px; font-weight: bold; letter-spacing: 6px; margin: 4px 0 8px 0; }
+        .doc-number-line { text-align: right; font-size: 12px; font-family: Arial, sans-serif; margin-bottom: 2px; }
+
+        /* 通用表格 */
+        .ft { width: 100%; border-collapse: collapse; }
+        .ft td, .ft th { border: 1px solid #222; font-size: 13px; vertical-align: middle; }
+
+        /* 第一頁表格 */
+        .p1-date-cell  { padding: 15px 12px; font-size: 13px; }
+        .p1-cat-cell   { padding: 15px 12px; font-size: 13px; text-align: right; white-space: nowrap; width: 140px; }
+        .p1-th         { background: #f5f5f5; text-align: center; font-weight: bold; padding: 9px 8px; width: 68px; font-size: 13px; }
+        .p1-td         { padding: 12px; font-size: 13px; vertical-align: top; }
+        .p1-td-reason  { padding: 12px; font-size: 13px; vertical-align: top; height: 195px; }
+        .p1-td-handling { padding: 12px; font-size: 13px; vertical-align: top; height: 60px; }
+        .p1-td-deadline { padding: 12px; font-size: 13px; vertical-align: top; height: 60px; }
+        .p1-td-project  { padding: 12px; font-size: 13px; vertical-align: top; height: 60px; }
+        .p1-unit-label {
+            writing-mode: vertical-rl;
+            text-orientation: upright;
+            text-align: center;
+            font-weight: bold;
+            font-size: 13px;
+            letter-spacing: 4px;
+            width: 42px;
+            height: 150px;
+            background: #f5f5f5;
+            padding: 6px 4px;
+        }
+        .p1-unit-sig { padding: 9px 12px; vertical-align: top; }
+
+        /* 照片表格 */
+        .photo-project-cell {
+            writing-mode: vertical-rl;
+            text-orientation: mixed;
+            text-align: center;
+            font-size: 12px;
+            letter-spacing: 2px;
+            width: 50px;      /* 7. 工程名稱欄加寬 */
+            padding: 8px 6px;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        .photo-img-cell { width: 455px; text-align: center; vertical-align: middle; padding: 8px; height: 290px; }
+        .photo-img-cell img { max-width: 100%; max-height: 275px; object-fit: contain; }
+        .photo-img-empty { color: #aaa; font-size: 12px; }
+        .photo-text-cell { vertical-align: top !important; padding: 12px 16px; font-size: 14px; line-height: 1.8; }
+        .photo-stage-lbl { font-weight: bold; margin-bottom: 6px; font-size: 16px; }
+    </style>
+</head>
+<body>
+
+<!-- ===== 手機操作介面 ===== -->
+<div class="ui-container">
+    <h2>缺失改善通知單 輸入端</h2>
+
+
+    <div class="card">
+        <div class="section-title">基本資訊</div>
+        <div class="form-group"><label>工程名稱</label><input type="text" id="ui-projectName" value="臺南市虎尾寮污水下水道系統分支管網及用戶接管工程第二標"></div>
+        <div class="form-group">
+            <label>通知日期</label>
+            <!-- 一勞永逸：用三個下拉選單取代原生 date input，避免各手機瀏覽器顯示差異 -->
+            <div class="date-picker-row">
+                <select id="ui-dateYear"></select>
+                <select id="ui-dateMonth"></select>
+                <select id="ui-dateDay"></select>
+            </div>
+        </div>
+        <div class="form-group"><label>缺失類別</label>
+            <select id="ui-category">
+                <option value="施工">施工</option>
+                <option value="安衛">安衛</option>
+            </select>
+        </div>
+        <div class="form-group"><label>文件編號（顯示於照片表右上角，如：CA-04B-042）</label><input type="text" id="ui-docNumber" placeholder="選填"></div>
+        <div class="form-group"><label>處理方式</label><textarea id="ui-handling">請儘速進行缺失改善作業，並於7日內改善完成並回覆。</textarea></div>
+        <div class="form-group"><label>改正期限</label><input type="text" id="ui-deadline" value="請於通知7日內改善完成。"></div>
+    </div>
+
+    <div id="ui-defectContainer"></div>
+
+    <button class="btn-add" onclick="addDefect()">+ 新增下一項缺失</button>
+
+    <div class="card">
+        <div class="section-title">單位簽核</div>
+        <div class="form-group"><label>監造單位簽名/代號</label><input type="text" id="ui-supervisor"></div>
+        <div class="form-group"><label>施工單位簽名/代號</label><input type="text" id="ui-contractor"></div>
+    </div>
+
+    <button class="btn-submit" onclick="generatePDF()">📥 匯出正式 PDF 檔</button>
+    <div id="progress-msg" style="text-align:center; margin-top:12px; font-size:14px; color:#555; min-height:20px;"></div>
+</div>
+
+
+<!-- ===== PDF 渲染模板（隱藏在畫面左側極遠處） ===== -->
+
+<!-- 第一頁：橫式 A4 (1060×750) -->
+<div id="pdf-page1" class="pdf-wrapper">
+    <div class="ceci-header">
+        <img id="pdf-logo-p1" class="ceci-logo-img" src="" alt="">
+    </div>
+    <div class="p1-title">缺失改善通知單</div>
+    <table class="ft" style="flex-shrink:0; margin-bottom:-1px;">
+        <tr>
+            <td class="p1-date-cell">通知日期：<span id="pdf-date"></span></td>
+            <td class="p1-cat-cell" id="pdf-cat">■施工　□安衛</td>
+        </tr>
+    </table>
+    <table class="ft" style="flex:1;">
+        <tr>
+            <td class="p1-th">工程名稱</td>
+            <td class="p1-td-project" id="pdf-project" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-th">缺失事由</td>
+            <td class="p1-td-reason" id="pdf-reasons" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-th">處理方式</td>
+            <td class="p1-td-handling" id="pdf-handling" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-th">改正期限</td>
+            <td class="p1-td-deadline" id="pdf-deadline" colspan="3"></td>
+        </tr>
+        <tr>
+            <td class="p1-unit-label">監造單位</td>
+            <td class="p1-unit-sig" id="pdf-supervisor" style="width:42%;"></td>
+            <td class="p1-unit-label">施工單位</td>
+            <td class="p1-unit-sig" id="pdf-contractor" style="width:42%;"></td>
+        </tr>
+    </table>
+</div>
+
+<!-- 照片頁：直式 A4 (750×1060)，每次填入一個缺失後截圖 -->
+<div id="pdf-photo" class="pdf-wrapper">
+    <div class="ceci-header">
+        <img id="pdf-logo-ph" class="ceci-logo-img" src="" alt="">
+    </div>
+    <div id="pdf-docnum" class="doc-number-line"></div>
+    <div class="photo-title">不合格改善照片表</div>
+    <table class="ft" id="pdf-photo-table" style="flex:1;">
+        <!-- 動態填入 -->
+    </table>
+</div>
+
+
+<script>
+/* ===== LOGO 管理 ===== */
+const EMBEDDED_LOGO = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgcAAAA9CAYAAAA538rZAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAFiUAABYlAUlSJPAAACL9SURBVHhe7V1PqGbJVb/LXs6yd85yVtLLWWQxIMgsXMwm2K87373vDQqNItOZ9yZ2FprRRCa6yAQS7IB/ZpBAz8LQziI8kGCjkOlFFi0otjBKByE0UWP7B200iye/qnPqO3XqVN0/3/1ev5k+Pzi8992qW/9uVZ1Tp06d6jrHJw6fPekuXz/uXgFdO+5uHBx3b4OunXR3r510d8TvQ443vNG9oNNxOBwOh8PxCcW1k+7K1ZPuJpj/wXH39NpJd7aEDk66JxAegkDxZveSzsfhcDgcDscFxfCl7hIYeNACRIZeMPpV6Lh7fPBW9x40DLoMDofD4XA4LgCwXRC2BPYpENTouHsM7QQEE10uh8PhcDgc54xf/PXuxYOT7vbULYNf+a3LZ1++/UqgD7576+w7f/52oL/++9NA/Bv0R9+5cfab33i5SKNGEEwgoLiNgsPhcDgczwBgwKTWL5i0pt/9g1fPPvyLd85++KMHZ0vx8Q/vn33vo9tnX3v/tSJ9TUFQeat7xzUJDofD4XCcE65/vnsZqnzNlCWBiUMT8H8/far5/M747/95EgSFMa3CwUl3340XHQ6Hw+HYM7Ai10xY0rc+ODz70Y8fan6eAGHh7/7h3tlHD+6ErQNsLUg8+c/HIUzjn//tkSloQKPQ0iaQDYQbLTocDofDsTbItuC+Zr5Mf/LhzcDALeA5VvrYXtDvvfE7LxZx8fyLX7sShAgGtAV4VtuiwG8rfUF33BbB4XA4HI6VAF8FtVMIJ7/3Uli9W8C2AgwP9TuSasIB0w/+5m4KYwGBw2DcCE0FNA0IAxAfz3U+oIPj7oELCA6Hw/GcYhiGl4+G4e2jvr971PcPj4bhLFDfPznq+3uv9/07wzBUmcTrff/u0WZzbw4Nw3BFp2Nhl7INw3Co8zWp7+/od5cCGoOafQEYMzNlCTBrCA06vkVjwsFw61ImfGDbwWL+v/QbL4RtCoSjTDUtggsIDofD8ZwBTPWo799LDLdFff8UjFinAQQGq+OP0DAMr+h0JBaU7V2dRhAqdFyLNptH+t0lCILBSfdIM1gw4r/8wXsZU2fGXWPKNRoTDjg/accA7YCOwwRhAlscEBBgz6DDie75SQaHw+F4DjAMw6tHff+4YJQt6nuTia4tHKxVtvMUDrC6rgkGer8fOP2rdwNj1vHHaIpwAILRoQR8IOg4kqBdgAYD5dJhgY67UxcQHA6H41OMYRguVZlv3z+Fup7oiQozmeiawsGaZTsv4QBME+p3zVDB/KWRIAPbCzruVJoqHICk/QFOLljbC5qgyWgILattvzjqGIYhO06KMTEMw4vymeP5gH93x7liGIabBYOMDPumEffqUd/frzFgoBAONpvHYP4jZO5jN8p2y4g7WjaGUcZm/DmgWxEzRgoGCwNDidbe/lSaIxzAGFGiqhWYQQdvdq/p+u8LJCjC1gQ2KqYw2QKYLNJQz14dhuEG/8Z2FGxTauESwzBcJsE0CUnBriWWT6ZRxJsKeg/j5zI/C3nEMfBqHnu/wBhF3rX2GAO+GQnoBWGct8IpTsEYQ9h2gZAItkkhvO9v6zD0IcvGaRiG13RcPBvJp5iHJEiQw/wWyo6/6Ac6Hep35hwoEbZW+/4Jl2suQhv3/anMF88r7cR0Z6xsNLYwVxffjb5dta+OfXeL0O5Wf3CsCJq4nhrMtzoB0CSNTmoy1LUYb6NshdDCGCsbY60yasBpkOUKWQsGWLnLkwNLaY5wAFqiPWjScff4vLYXks1J39/VYWOgfvGQGG3oP7Rd9XCz2XxmGIZf0/2Bww8PwQ/LyS1M9LE8qe/Q5IU03m7FkyB7mtTPMfGJdEZJC0ph3Ggj2ylkCC9p0geT4Dz7/imNTYwzzUgiifqLtKpMIBMOwKhiPtAGyjgZMwhloDIFI+j47gN6hvjNcJkWwHVEXIofvllKJy48QllkuE5HIi1uYr+7JN47TXXjMvX9bf1+iJ+3bdSQ4h3d5gZpIYjyDXmJcnH9Hsn2hk0Z56f7mAT136jdhfAuv62wE9MaMEarX5i0XQA+1Gk5VoS5Mp84+bJ0rrEW462U7Z6OZ6FWNsZaZdSAsZ5moDDw02g5HppDc4UDaCok4PNAx5lNx11h/Lk2wqoufn9M1uYqhk6qVB02YaLkye6w778dDFeH4fcpTUgAWJGHCYi0UE8PN5s/ppVaka7F9On9jPlY8SQ4nJgwGAXyf0FOiIKpBMYrylkIyvrdIo3NJmO6I2lFQYUYJyZ7jC1RJ7SN1ABeHakrwq2803ilZ2DSpsEzw2pXfpfSbIanhDgsMtQQV74r/n+P41ppWxj6/mP+tiSg4lRVEBRSHPTLmNbj/O0Qlvqk+AZZH2iRFqi4jmDUlBa0KLEutTYZFw44LQiNhQAg0ijG0BJMbXvHjkgSpKBWR5gCg/Gak5HowGZ+lbIVK7glMMq4c0ejq5YzxomVufZMCGFBx1tKc4UDEE5FzIk/heASWrfHWqBVKiZVTD7VfFiAqPUngNSq915//fWfCYxqs/mnYRi+TIwtTcR93/88hf/tMAxf0JMspVVMUvT+UuEglI0ndd33TaqkaSGluaCv63rV6lR7TmHlChUqdnoWmEzcNuJV6H2xCoZQoreEWm001oY2I2wLB2lh0qong45dn/Wf+9xPaHshLHYsIYxW3Air9m/BZIstkakQwkEUtvN2sttkfExFgdB4HxAC46SF3RimtL1jBSQVjaDaymwqCsY7TmanqpStmKSXoCjjgglTIlykZDg6kmp8ANsLOs4utEQ4gLdFiak+FVoEA0zdJmthzsqD1K3ZHj1DrmrENgNW6l8/7Pt/OdpsvsHMaBiGX6ZwTNoI/0dmTsKGgNWb0jAWjC8ywO0zHS9T31eEg+2KsaE54MldplfDBRAOQpg8Zizjpzx0HalNNYMS7yabJqHGlpoDM1ymBXA/y2gX4aDvP0Ccvu+/mQyraUumiLvVHpgMVAhWO40z7qNCUIFNTUuI4nm3KhyQQGfWC5BG5VZfnZJ/orjdN9r2jhVQWPkPw5mOMxcF4x2nYqACVtn06mEpijIumDAlcP+AZpj6+OBSOwMYM/I1zUhTXsusTz/w3QsQAGQ8nIjA+8gffyUa/gxm0T60B2LPdupWF28/ZJMsTVBg2A9Z+0Tq8Zt933/xqO//bBiG64LhXjHCg9DManvBsLeaMWYwgsHpeHrlOEU4YDrs+z887Pvv0e+vU9xiwrWwRDgwGWYsK68GYSuRytfai28ygejQLBNAGFwGzaAEkyiFs9guyebACpdpARyu0jaZkWR4nLb8Dsh76PufIpy0UFWtASPs8cc4hbEhbe+U7Vajloo/joOgsQnl3H4Xu02MtmcIoSUIvKEPG9pgUbfCgFMYbU4huaVV9DHHiig61UUSDsp4O5eNUZRxxoRpwbI10HcljJ0OgA8EMG4wa8QFk7c8KK4NeFDUZVlEK9sehEnAMEgdpb7/X/zVe9ZkYBjSI2Or+8Rs/5T2+zFxYhUU9v11uEyL0ismKYvBWfEkqsLBlqGBQrk3m80vhLSOjj5D74xqUxhLhAOGMJqTq2c2nCzIMmgW7QBDRljsY7+bJ33sW3PbmaQZjkiv2LZk1XtRxq2wU8w5DeEgCIO6DyRvrUQyTNaF7FegNbjfWtwIbRbylDYJrHUIwojUvFjgvHV7hbBSOMAJlMXCAW/9cntzP9FbH0KI2NmIcGw8OVaCkKTlIFx3W2G5zcHqZWMYZVzc0T570l3WjBLXIUvUTgbULkI6b8CDIrQN0ExASNHlnETHXWFQtStopaBXD2P0BeorBeMkphtXg33/6LDvv3LY998URyRfpVVOUGfLcCOtYpISTGG2cMCnbGhMvEh1CSt0Mmh7BbYS9BuCDo6fQRNSZTgSOwoH8jQFTjCYmg01rvXpgpA/CWZgdmCEYFYwauRjcKEd5PcUDKcmHEyuj/V9UhgLYfFvOhJNq2uzvnSkLtOYsY0MGyOS5uAGTsVwG5oUV/u/qjUHSXs2DO/Xyi7BddTtFcJIOOBtDOpXqR0pHFtz3+dvQ/EKOwehpQuGmqFPxt/3dVyg1fZB0DI0xaJt0EfCtsWS7+5YgHS0RZCljpqDtRhvpWxFh1+CtcoIHLzZ3dKMEgxfAt4GOQwMGLYI2lDxIgHaBHhRbDhAMun6cbfK99kVLcNVsT3wGvoTVuOYvNVpBTCmLNxIp5ikrAnQiichVm5M2C7I+v0IFZOthaXCARvWJSJByihHRnqsinYonZrtZnPAq/06g6Fjgtb3YQgNTbY9Qv0C//PWB5eLjSmz1TAJPyjzVyvlZtV70kSk/FS5hNaAjwhKJl4js70ADqf/IQRAuEzCKQsih8PwoRDQiu3C8E40Ek7aEGFUqYUbnAQKY65meCnqdioFw9BWqj76uzv2BNEp5aCuTqxTsBbjtcqmB89SrFVGwLqKWZ4IAKAhwL6/vONgKsCoscUAgUPaEYB5f+PbV7O4yBdbE3gu44JgDIl0dNlawLYG8rW0HhYdvNWl415rQB4/nExxBVbs2zJoQrtinCGv0nkIBzQRBsZIz6Hl4H1tTOLs2AcahqDJsFZ0NSwVDkSdUI5iJTlWP4YWgphJJmYl8zFIMzudr2AwcNrDzCU7Wml9Hwa1fdi6lGkLBp0ZA7LQoLcbKAxq9JCXLjczSLk9UCsXbXcF+wFRv0yzoomNLnW+gBQOqP8jbf4uIW/S6OB53HLo+weaJ1BYOJ5Jv9NxTK3Jomepjei9zHixVv8QRt/FhYNzRpKKJcXOMKqqrO19rcV4K2XL9uNqqJWNsVYZrS0FbfAHTGHIbEiIo45jVzUzLTmtANJCBfK2DBwlJvlEWHlrQUyIQeWvJ0JNQttUTDKAZMRkdFikoYlWakX/sCYpLq+0d7DiSRjCwbdoVcfbcQi7xcaUxDCgZg172VPGA7BYOCAre25XYk5J+BqrH0PEC8yR6oi2hSofq3CTQWjmwND5Wu9PicOoCQf0+waV4WoKN3wWSIhvl8pNgkZoS6Sh46qyBxsEnsusOBasfFOYEA64TmK7g4XSqD04PPzt8H1iWsUWnYTQCBSCEm1/NftGq276++tv49gTklQcP4yk4iMx6DwyXHCaH2ctxruwbBi01bIx1iojLPQ1gwSTnQJoEWB4OHJ/QZOWCgfalbI2SoTNBIQULSwg3tjRR91Gu6A1aVgYiy9We5crmimbjH1Ua5IyBdptGqYxliEcQB2N/WWcTvgK/Y9nXz08PDwRTmf+taUh0VgiHJBLYTBv9jnCDEQaTOqjmqxt0UZpIX9huQ4hB1oQMFjYlkSL/CiMSM0NM1MzvRbjnxKH0RIOKBx+F4JWSjDNavtbTFpoMjIbllq5SIANq+xaHA0r3xQmhAOO1/f9z8p0ad5F/f7jqO9/zAJRDUJrAIG1EJR4W2pKW1l1c+HgGUI4xNCTmV4hvMyqqNbHMRhv0yARJKVoiZlli4ZOjbIxjDI249eAuwU0c7SuY2bAzgDhYL76vSW0VDiAMCKB7QMdR+YBQYG3RMbuhMBV1bqdlqI1aVgYi0/75U/o/8B4tKagQsUZ7tokZbzLZLZLRTiIlvXKEp9VuUd9/19Hff+xTquFucIBM4lkoCnaFWmJejHD03eoZMbDop5hxUqCQagj1Quq6lf6vu9lOvTb3vcW7Z/KmHsyZEFqsnBAdSu+bXgmtrhGtZOUF+qQnm1X2Llb40a5GCLOJJL5pjRIOCDhDpoPbMHEuuZCFRsXfj9PoYS1TaJBWxWn+jlDfLvkojqR2xw8W1jGf6NU+TgF451AVkdmrFW2yYNr4uQJXD3pbmrmqO9RYMAocere/VRaKhyA9FHLKWWD3QSEA1BNg7CmUeKUSVOiFV+scMKqTTjEGSfBcER6q0xShnDADJhX0ryCvhtOK/T96WHf/+Sw7/8dDNwSXCwsEA5g4IfjhpdG2nVSOzDDEd8hEw4oDh95Ywv40AbWqlPnS+1nH32lc/itekwQDnCHQJrb9D68BuclmBrXrTj50ioXQ6RXtIWEzjcLE8IB29FYwgHFDdoifSRYIn1LajcdzhBlMm1khE1Flfy0wjMCdfx5TLjycdYWDtYqmxiAbZo4eQLX3ure0czRMjrc5VrmFq0pHCAtHcciHHWEoIN6Vo49Nvcn52DKpCnRii9WbZPLx/u+Vn9aa5IS6WAPPljL0/Owkiamx2r994mZ/hy9ExisSOswjD+bovp/s3lqhCWyJvBWu05tB7KbSE6FQr2QrnhPGMmFE1M09tl5le0+eSRfiVY9asIBCWCw74hHq2l7gf6/XWOKnBfPbaJuhTDXKhdDpNfsvzrfLExsKzBqwgH1fb6oqRCOAXFiAxrbgqEn2goaVe3CVGhtkOOcMNkTV1RHmZLz2sIBY9eyiQHYpjnCwUl3RzNHfURxzPnRLrSLcAD7AYk5Wx18BTUMKHUYjnbqdlqKdMY7qkDlPnSN2E1rUQYKT5MzTVr6fYuwl17YC4iVYLbXPoG0++TsoiQSCPILimiSZg9xeI9sayAoSLfQ8264M8hidhSG8WE5aKrZHGRMDPWmy7GkMJQMEsk/AL5P9h5pMJ5qxjJHOAjlj+WqGtiFcOo7ok4QBNgBVLrqOZ1G2J7eKFbz3Gb0PdmhV2LAlubKSochv4EOA0Qdg8MkLUyFONQGxvNgXKm+a7jPQjhMKtqM7UcmU0U4GoO5vWxoYBx7Bjk5wQCBFzOc7eXJGZ0FTj+afhDIKKuYdFpkTUgWdinb1InTsrit4dpxd6qZo8YUrQHitPbxa7SLcKCNDaeekGCC1sC6ROrguDMnryWgVZveu59CprMsKTRO7Q/UJ0zhlfbPi/gtmtK/ampWOeHTWChW+fsAtxW1rbQ3aJF2goRncChkfVMIPaiPafxGcfRxOk6nsEfQ0GXW4QDPW2RAx+2NMuGEiNnOVAb4yCgYscgTGiBQdhxWl6k1dwEivjlXqvRq/T+4BTeeY8tH9zVp03XVquMcUBrFom0KrD6j4zgcFwo416+Zoz62OOWyJQgHMFTUz8doF+FAaw5qNgRzCXYYup0cDofD4XhugFWyZo6WK2Qcb9TxJMFr4hzGzrSLcLDU5mCMcIJDt5PD4XA4HM8NrNsY9TXNjJYTIXacVDHwq9KawsHcvBtkqmAdDofD4XgucPWke1UzRxgg1gBVvmX4B5U+AA2CDmvRLsKBvvFRhy8leI3U7eRwOBwOx3ODgze7lzRzhJHeGGDlr9X4wNyTDUuFA/g0kGg5QZpDB8fdU91GDofD4XA8Vxje6F4AQ5QMUjNsoLbVAGNFGCPiaCD8Bkxl7rW8pr6vr5TGyQUdZwkdHHfZ5TQOh8PhcDyXsHwd6GOCuOgIdgX6OYO9DgJao9CipcIBbnSUmKuxqNGaPg4cDofD4fjEwrpfQTNfeZwRlx7h2KI2CGTAiRLfkgjfBy1DwaXCgbaLmGvrUKM171WQoHPi8FKHG96Ci2HpTEU7ElLntc2jlelsd3T4Ak936ew0/tfpUFrN+rV8fIy9uxTJGdBEZ2LPCsk52gwnY2uDzvnjwifcsQGnRnAjvNP5/fMA9aFn2nbnAWv8XLQ+3ZprlpZZOA5czUeM4wJg+FJ36eCkeyKZpN7TByAUaGYK5s4+DmrCAoAtBwgMfK0zBAeQZvJThQN93HKOtqJGByddcXPhGiAPedF1rSJ26CIZZEFqQtU+8lV6QfORJuMyvDnoW95Bx95dChcOpiF529RkeL+8aKgJB6If75WpyPGwzz5WGT97rdtcNOeahWV24eBTDMsZkrYzwG8dRxMLCMz8IQxoRt7CFOEAmggJOG3ScRbRcZd5gFsD7FI3DBy6oZCuzGVXt2GiygZsHGhSis80B9k9HdGzJu4uwB0F8l6D4G3uaLOJrnM3G75x0PQ8xxAMsLiJdF+aA8c4aEXK3/wBeeuDBgEug5+JsDIHz4twAM3OoXArTbd1XqhxIzUH2bXvYt7ZZxs5PmHATYSaWWI1ru9ZsI4xSoIvBAA2CjoMxx1htwD64Lu3FmsOsIUgYd2PsIT2cYQxDb7okz1z+0pubcPEoaT56kQpfbTX3NnKZ3NXu1Pik8DD9w/c4Auh6HKhzIEUCS4xTbpil95N9zOE9IxLk+iiHzy7SdeZ433Q7ZQBgbZsOB8wzHDXgYrzEqnj+Vp0pJ25wxV5Ql0P5pvKFMJQzrzsfE8D8kMZ2CX6fe1OWIWjHihLcYeDBt0PIMssXVBju0rf5SDbAvmc6n4xtW3xHsXdar7yK6VT/fkZpy2fWcIBxYtXSMc7KtI71Mfi/RDbfFHerH/JvEIesQ646wLbbKGdKC1ZftyJkdod48aoI8IXMfWWIFJp91BeGQ+gsYM+wosLCPiL3DfXMDbv0PeV7RL6rXbHzWNDtCkWJjymt9rR7TP+NjfwGwIVpyUuaeM879OdJrLf18Yd0m668XYsACz1NcMEE5fAKr11NTL7O0A8nGDQ4ZqW2BxAGJAYE1im0MFJVwzONcCdVl+6o6E0B494EMkBB6SLYvr+cZ6CjSnMXkLEz28+zBliXS0pLszJmJqm/Cphc1shMTiD1B0TcVUdJ65wMQ/9xgq7LEu8jCilLYW2jKmqMlltKRlBQWLCJ8HEvo7ZmJQl6K6Eot4Wsgt+4m2cqf3lhD6lbdONkjGtcP8LtV1Zf/ls24ZlPNl2VhnondQntkKD/B7l9zLIuNJZU2h3rYkTt58uWj23hIOR8pZ9OpYJ3zFqAEf6ylyMCQfi+8YxsxVUwm2fKR6Pja3mMl7qFusVtjrltpgeU0o4iN9bjuWYZxpPU8edYyXAM6BmmiC9LQBHSC3Gz3ceWJcaaZorHCBfqc0Yiz+JjrvH+9AaAKLTFgNPojGBZe+KVfpcZj8vvibxvp5QiPHGq28FE5K3kPLEZzGTUeGAVnFkgMnxeMJJTJ8vPVLMlJ/hgimkdSrSjyuU/FkSDkjrk7ZTrLYU9cHtkq8RQ+VVTLIFEFcHQ3jiWymzCbUGySg0s9GQtzHSZT8oDwtF25X8tLaVE3y6UCr7Rsb3nCocZHFVG1DZkxCQ1SMfD+l70eVX4QbMIl6FYYf+Q8+lAI84+9AcqHbHpViyr6aTUuImTSng4tKv5vefCz2WrXB1a+oVUd6tkKaEA3rGfTH0OzW3xHkDi5CYVloAkdHtVvDYjqeyP23HHbRDxbhzrIhrx927mnnCEFGjpcpnJ0o42tjSMoDmCgf6FEXLpfMMaqp1d0Fr4EkozQEGUdj7o0EkGeb5CAfK5kDaPVjM3JoQ5ZW+KX2DmVjp0fvZhEOCQDbxI35qN1IXS3V0MtBk4SW/1pdXxZKJF5NcCjPa0qqP+WzLFNI1va28JGYKB7zClgyUhaDkw0PnXWMSmbYjbhvh5tgkSI/UtWyTicIBQLY5cRtqWzZdvjIvI02rf4r4vCoP6UBI2EU1PZJXWbZtf5Xl5fdXt4OSqH13Cdpew/XqkfkadTOFg+03R7+JgiZsoDC3RI1oGrtSEAtl4lNdef8r+5P13SfOjY6ZwMkFrKQ1A8WJBI2aZkCedGgJEaC5woHUYkCDMCZ8TKB7ug3WxKJthcogBeS2gpSua7AYWgtT4lvM3JoQLUHGGtRWevR+OeGUTO1qarcojCSBBiTKwit3TMQ6ThJ8dPoSVttY9TGfbVXX1brUoFaXzUvBUltYk7Q1kY4IB8QY8u2QuFoLAkIzbatNJgoHansE/Qj2BKxiLtvQyt9qA4NhByZlnCYa28KpoZWXWTbr2Y5lmIrad2eQ9iyE43/5e0w4UFqGoLkjm4u70BikuSzXSm7tQ2K7bL+71Z+s7+7Cwf5wcNxdNZioKSDAJkHHA8EvAqPlg2COcKANEXd1fESeIfd6yZIaTEk1C5DRm3WUsRikDDlpYnCpMKjjspWGxdBamBLfYubWhKjqHlZi6dl6woF8VxtDwliPVfjF6lnG4/91+hJW25iTlPWMtShCTWytGC0oe4n0PoW9IAVPjif7hhDS0lFdXU+r/5FqnwmGiXEyj23NWw9x6yga3HK9ikk6tclE4UC0V7KtseKaeRnx1BZX6mOyj+C5Eobk+8F/gWb2FqyxkMKMslWesaGmNhDlsqYTB2rVnfybaINcC9Z3l9DlqI5VQzig55Gxbza89YctgGh7ELWTmb2BsB9Cf8q336z+ZH13Fw72C+toI8i6dwFHHLWjI+neGNsLNT8Ec4SDtbUG5+ENsTjKGJkUpOHAGHiAZYNUGSTKvWJAGVDxqgrqV3mU8ZDej4ObDAy1lbGGYIC5QaJ415ogrAlRrhyo7pn6lvO00gtp2pOm9YyZX378MqrBuSxy+2GrYaD2a6WfwnYQDpSGA0Z2cqVa5KWhDdTAqGkVlh1lFMJXaAvF0KsaEotJhGexDSHEYr9bGpSxsV92xDKkK4zWUn5jwkHUsIXy0nPeBtp+07bNQckkcuaebCr4ZAMxKtTxMVnDwwYAWxnMyJKgzeNobPyQ1f722242EObStqVVtsqz2Kd5tc1j3PhecsykY5SbTSEEW7C+u4T4luH7yJMEU4QDeawTcwoJY9t5IaYj7Q1Sf6K+65qDi4hrx92pZqggfYIBAFPXTpLgGIlRM2KcKhxooWQFrUExEPaFqhOkKB0XDLcgNaGOOEEKDCANnjK8ufIRg7wgS5BpCQcUd+u4RwoIKwoHI+2Rl0WryCekn8J2Ew6w+t+WMVqg8x5ukZeFrC0lCY0A5ZMfAYxxkq0DoOtpMYlqn4xH2eQpkEzoaxqQlX15KzSJd7JtBZ2u9b0sJpH3EevkTFh1q2eyjmHlnZjZZjO6BVkZP2V5R57RnKHLm+JUxwwJJlqLVoP13SWkkBJIzGNThIPsO4r2S4uWmI7UfGwXU9s8WWtW9ifru7twsH+Q/YEpIMAtMo4rSmA1L+0QsLKXcbDVoAWEKcIBtBDyhAK8Lep05hC0Irqu+wZJzBgoYY8bA0uq/Vh1W6HMPwIDYTRIkCZ8Jkir4uDzwKCmEyTamtDvZO+qsvIzmV+WB1tZkwqcbSbSysZKj55zWeTkUTwTYWCe3B5o48KojCb6pF2gtKSavpU+h0kreq5385kIC2ng/yXH0+j9UE9yhFQIe9SeUKNzHQujNl1P9Q10e8u0rPxgbMbh+NaT2kmEhXFB78t3eLyw5qL4NpW8inj0HGUIdaG247qH7ThRBr39F4SyKQy3Mn6s8jaf0XN8EwhPXC5oOpJQJtJPY5CY8CStAVD77io8tA3lj3ksy5fiterA8bNTD/xcxqewlyi/MIYr37joT1Y8xx5BtzYW/g9A2EqQtgUMMHgICWDgcHgkGbsWEMaEA4Sz10UAacGXgi7LDMpU9I79Iqw8okQvtz5mMcRPA8LEHVe/7KxHnqgomLfj4oAM6Cb5FXmWYJX8FCHG4VgFLQEBBEFAe1IEYGvAbpQlICCwjUJLOMA2hRQMAMvz4mQ67k6hDdH1c+wPpro/7mMXq5RPM9KqTpMwxnJcTEAFLu01LirC/v4MrYHDsQrC5UwVI0UQthAgBPC1zRIQHLTwgHiwXWCPigwIA9AsQOCQaeF9nJbQ+U4hnEo4D+NDRwmh/kuk4zwvgLpTtUXTuM3hcDg+McD1zvoGR0nQCICxa3uEGrQwASFAv4s42J7QeU2kh9c/3/kelMPhcDgc+wRcDeN6Y4MRJ8LqH1sAY1c5jwHHJJfaGEDTgS0RXX6Hw+FwOBx7wtWT7qblTdEiMHhoFMDscdqgBWgPPnpwpzgaOYMeQcOhy+twOBwOh+McQMcdb4AhG0x6lGCrwNc4g3Y6onjcPYB3R11Gh8PhcDgczwi4wAh7/JppnwPdc02Bw+FwOBwXGNePu1dwu2Pr+OOuFGwe3ure2ffdCA6Hw+FwOFYGjBehUQjHICfaJ1To0cFJdxvbBm5k6HA4HA7HpwxY7UO7AIL/AdxzIAmGjiK8cIHrcDgcDkcN/w9JagrzfiEfMAAAAABJRU5ErkJggg==';
+let logoDataURL = localStorage.getItem('ceci_logo') || EMBEDDED_LOGO;
+
+function uploadLogo(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        logoDataURL = e.target.result;
+        localStorage.setItem('ceci_logo', logoDataURL);
+        refreshLogoUI();
+    };
+    reader.readAsDataURL(file);
+}
+
+function refreshLogoUI() {
+    const preview = document.getElementById('logo-preview');
+    const status  = document.getElementById('logo-status');
+    if (!preview || !status) return;   // 元素不在頁面上時安全跳出，不中斷後續 JS
+    if (logoDataURL) {
+        preview.src = logoDataURL;
+        preview.style.display = 'block';
+        status.innerText = '✅ 已上傳並記憶';
+    } else {
+        preview.style.display = 'none';
+        status.innerText = '（尚未上傳）';
+    }
+}
+refreshLogoUI();
+
+
+/* ===== 日期選擇器（一勞永逸：三欄 select，消除原生 date input 的手機排版差異）===== */
+function getNoticeDateValue() {
+    const y = document.getElementById('ui-dateYear').value;
+    const m = String(document.getElementById('ui-dateMonth').value).padStart(2, '0');
+    const d = String(document.getElementById('ui-dateDay').value).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+function initDatePicker() {
+    const yearSel  = document.getElementById('ui-dateYear');
+    const monthSel = document.getElementById('ui-dateMonth');
+    const daySel   = document.getElementById('ui-dateDay');
+    const now = new Date();
+    const cy = now.getFullYear(), cm = now.getMonth() + 1, cd = now.getDate();
+    for (let y = cy - 3; y <= cy + 2; y++) {
+        const o = document.createElement('option');
+        o.value = y; o.text = `${y - 1911}年`; if (y === cy) o.selected = true;
+        yearSel.appendChild(o);
+    }
+    for (let m = 1; m <= 12; m++) {
+        const o = document.createElement('option');
+        o.value = m; o.text = `${m}月`; if (m === cm) o.selected = true;
+        monthSel.appendChild(o);
+    }
+    function fillDays(selDay) {
+        const y = parseInt(yearSel.value), m = parseInt(monthSel.value);
+        const prev = parseInt(daySel.value) || selDay;
+        const max  = new Date(y, m, 0).getDate();
+        daySel.innerHTML = '';
+        for (let d = 1; d <= max; d++) {
+            const o = document.createElement('option');
+            o.value = d; o.text = `${d}日`; if (d === Math.min(prev, max)) o.selected = true;
+            daySel.appendChild(o);
+        }
+    }
+    yearSel.addEventListener('change', () => fillDays(cd));
+    monthSel.addEventListener('change', () => fillDays(cd));
+    fillDays(cd);
+}
+
+/* ===== 缺失項目 UI ===== */
+initDatePicker();
+let defectCount = 0;
+
+function createStageHTML(stageKey, stageName, id) {
+    return `
+        <div class="stage-box">
+            <div class="stage-title">📌 ${stageName}</div>
+            <div class="form-group">
+                <input type="text" id="ui-reason-${stageKey}-${id}" placeholder="輸入${stageName}的文字說明...">
+            </div>
+            <label class="photo-upload-btn">
+                <span id="btn-${stageKey}-${id}">📸 點擊拍照或選圖 (${stageName})</span>
+                <input type="file" accept="image/*" onchange="processImage(event,'canvas-${stageKey}-${id}','btn-${stageKey}-${id}')">
+            </label>
+            <canvas id="canvas-${stageKey}-${id}" class="photo-preview-canvas"></canvas>
+        </div>`;
+}
+
+function addDefect() {
+    defectCount++;
+    document.getElementById('ui-defectContainer').insertAdjacentHTML('beforeend', `
+        <div class="defect-item card" id="defect-${defectCount}">
+            <div class="defect-header">缺失項目 ${defectCount}　<small style="font-size:13px;font-weight:normal;color:#666;">（每項缺失＝照片表第 ${defectCount+1} 頁）</small></div>
+            ${createStageHTML('before', '缺失事項', defectCount)}
+            <button class="btn-toggle-improve" onclick="toggleImprove(${defectCount})">
+                ▶ 展開「改善中 / 改善後」回報（完工後再補充，巡檢當下可略）
+            </button>
+            <div id="improve-${defectCount}" style="display:none;" class="improve-section">
+                ${createStageHTML('during', '改善中', defectCount)}
+                ${createStageHTML('after',  '改善後', defectCount)}
+            </div>
+        </div>`);
+}
+addDefect();
+
+function toggleImprove(id) {
+    const el  = document.getElementById(`improve-${id}`);
+    const btn = el.previousElementSibling;
+    if (el.style.display === 'none') {
+        el.style.display = 'block';
+        btn.innerText = '▼ 收合「改善中 / 改善後」';
+    } else {
+        el.style.display = 'none';
+        btn.innerText = '▶ 展開「改善中 / 改善後」回報（完工後再補充，巡檢當下可略）';
+    }
+}
+
+
+/* ===== 照片處理（浮水印日期） ===== */
+function processImage(event, canvasId, btnId) {
+    const file = event.target.files[0];
+    if (!file) return;
+    document.getElementById(btnId).innerText = '🔄 已選取，點擊重拍';
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const MAX = 1280;
+            let w = img.width, h = img.height;
+            if (w > MAX) { h = Math.round(h * MAX / w); w = MAX; }
+            canvas.width = w; canvas.height = h;
+            ctx.drawImage(img, 0, 0, w, h);
+            const fs = Math.max(w * 0.04, 24);
+            ctx.font = `bold ${fs}px Arial`;
+            ctx.fillStyle = 'red';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'bottom';
+            ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
+            const raw = getNoticeDateValue();
+            ctx.fillText(raw ? raw.replace(/-/g, '/') : '無日期', w * 0.97, h * 0.97);
+            canvas.style.display = 'block';
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+
+/* ===== PDF 產生（html2canvas + jsPDF 混合方向） ===== */
+async function generatePDF() {
+    const btn = document.querySelector('.btn-submit');
+    const prog = document.getElementById('progress-msg');
+    btn.disabled = true;
+    btn.style.backgroundColor = '#6c757d';
+
+    // 日期轉換
+    const raw = getNoticeDateValue();
+    const [year, month, day] = raw.split('-');
+    const twYear = parseInt(year) - 1911;
+    const dateStr = `${twYear}年${parseInt(month)}月${parseInt(day)}日`;
+
+    const category    = document.getElementById('ui-category').value;
+    const catDisplay  = category === '施工' ? '■施工　□安衛' : '□施工　■安衛';
+    const projectName = document.getElementById('ui-projectName').value;
+    const docNumber   = document.getElementById('ui-docNumber').value.trim();
+
+    // ---- 填入第一頁 ----
+    document.getElementById('pdf-logo-p1').src = logoDataURL;
+    document.getElementById('pdf-date').innerText = dateStr;
+    document.getElementById('pdf-cat').innerText  = catDisplay;
+    document.getElementById('pdf-project').innerText  = projectName;
+    document.getElementById('pdf-handling').innerText = document.getElementById('ui-handling').value;
+    document.getElementById('pdf-deadline').innerText = document.getElementById('ui-deadline').value;
+    document.getElementById('pdf-supervisor').innerText = document.getElementById('ui-supervisor').value;
+    document.getElementById('pdf-contractor').innerText = document.getElementById('ui-contractor').value;
+
+    let reasonsHTML = '';
+    for (let i = 1; i <= defectCount; i++) {
+        const r = document.getElementById(`ui-reason-before-${i}`).value || '（未填寫事由）';
+        reasonsHTML += `${i}. ${r}<br>`;
+    }
+    document.getElementById('pdf-reasons').innerHTML = reasonsHTML;
+
+    // ---- 截圖第一頁（橫式 1060×750） ----
+    prog.innerText = '正在排版第 1 頁（通知單）…';
+    const page1el = document.getElementById('pdf-page1');
+    page1el.style.display = 'block';
+    // 等 logo 載入
+    await waitImgLoad(document.getElementById('pdf-logo-p1'));
+    const canvas1 = await html2canvas(page1el, { scale: 2, useCORS: true, logging: false });
+    page1el.style.display = 'none';
+
+    // ---- 建立 jsPDF（第一頁橫式） ----
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    // 8mm 白邊，避免印表機吃邊
+    const mg = 8;
+    pdf.addImage(canvas1.toDataURL('image/jpeg', 0.95), 'JPEG', mg, mg, 297-mg*2, 210-mg*2);
+
+    // ---- 照片頁（直式，每個缺失一頁） ----
+    const photoEl  = document.getElementById('pdf-photo');
+    const photoTbl = document.getElementById('pdf-photo-table');
+
+    for (let i = 1; i <= defectCount; i++) {
+        prog.innerText = `正在排版第 ${i + 1} 頁（照片表 ${i}/${defectCount}）…`;
+
+        // 填入 LOGO 與文件編號
+        document.getElementById('pdf-logo-ph').src = logoDataURL;
+        document.getElementById('pdf-docnum').innerText = docNumber || '';
+
+        // 取得各階段照片與說明
+        const getImg = (stageKey) => {
+            const c = document.getElementById(`canvas-${stageKey}-${i}`);
+            return (c && c.style.display === 'block') ? c.toDataURL('image/jpeg', 0.85) : '';
+        };
+        const getTxt = (stageKey) => document.getElementById(`ui-reason-${stageKey}-${i}`).value || '';
+
+        const imgCell = (src) => src
+            ? `<img src="${src}" style="max-width:100%;max-height:255px;object-fit:contain;">`
+            : `<div class="photo-img-empty">（無照片）</div>`;
+
+        // 建立照片表 HTML
+        photoTbl.innerHTML = `
+            <tr>
+                <td class="photo-project-cell" rowspan="3">工程名稱：${projectName}</td>
+                <td class="photo-img-cell">${imgCell(getImg('before'))}</td>
+                <td class="photo-text-cell">
+                    <div class="photo-stage-lbl">缺失事項：</div>${getTxt('before')}
+                </td>
+            </tr>
+            <tr>
+                <td class="photo-img-cell">${imgCell(getImg('during'))}</td>
+                <td class="photo-text-cell">
+                    <div class="photo-stage-lbl">改善中：</div>${getTxt('during')}
+                </td>
+            </tr>
+            <tr>
+                <td class="photo-img-cell">${imgCell(getImg('after'))}</td>
+                <td class="photo-text-cell">
+                    <div class="photo-stage-lbl">改善後：</div>${getTxt('after')}
+                </td>
+            </tr>`;
+
+        photoEl.style.display = 'block';
+        // 等 LOGO 與所有照片圖片全部載入後再截圖
+        await waitImgLoad(document.getElementById('pdf-logo-ph'));
+        const allImgs = Array.from(photoEl.querySelectorAll('img'));
+        await Promise.all(allImgs.map(img => waitImgLoad(img)));
+        // 給瀏覽器一個 frame 完成 layout
+        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
+        const photoCanvas = await html2canvas(photoEl, { scale: 2, useCORS: true, logging: false });
+        photoEl.style.display = 'none';
+
+        // 加入直式頁（8mm 白邊）
+        pdf.addPage('a4', 'portrait');
+        pdf.addImage(photoCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', mg, mg, 210-mg*2, 297-mg*2);
+    }
+
+    prog.innerText = '正在儲存 PDF…';
+    pdf.save(`缺失改善通知單_${year}${month}${day}.pdf`);
+
+    btn.disabled = false;
+    btn.style.backgroundColor = '#dc3545';
+    btn.innerText = '📥 匯出正式 PDF 檔';
+    prog.innerText = '✅ PDF 產出完畢！';
+}
+
+/* 等待 img 元素載入完成的輔助函數 */
+function waitImgLoad(imgEl) {
+    return new Promise(resolve => {
+        if (!imgEl || !imgEl.src || imgEl.complete) return resolve();
+        imgEl.onload  = resolve;
+        imgEl.onerror = resolve;
+    });
+}
+</script>
+</body>
+</html>
