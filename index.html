@@ -513,7 +513,7 @@ async function generatePDF() {
 
     if (navigator.canShare && navigator.canShare({ files: [new File([pdfBlob], fileName, { type: 'application/pdf' })] })) {
         const file = new File([pdfBlob], fileName, { type: 'application/pdf' });
-        await navigator.share({ files: [file] });
+        await navigator.share({ files: [file], title: `敬請查收「${fileName}」` });
     } else {
         pdf.save(fileName);
     }
