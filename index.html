@@ -20,9 +20,9 @@
         }
     })();
     </script>
-    <!-- 改用 html2canvas + jsPDF 直接控制，支援橫直式混合 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- PDF 原生文字/線條輸出；僅 LOGO 與現場照片維持圖片格式 -->
+    <script src="./pdf-lib.min.js"></script>
+    <script src="./fontkit.umd.min.js"></script>
     <style>
         /* ===== 手機 UI 樣式 ===== */
         :root { --primary: #0056b3; --success: #28a745; --bg: #f4f7f6; --card: #ffffff; --border: #ddd; }
@@ -100,7 +100,7 @@
         /* 通知單標題 */
         .p1-title-row { position: relative; margin: 6px 0 10px 0; min-height: 30px; }
         .p1-title { text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 6px; line-height: 30px; }
-        .p1-doc-number { position: absolute; left: 0; top: 0; font-size: 12px; line-height: 30px; font-family: Arial, sans-serif; }
+        .p1-doc-number { position: absolute; right: 0; top: 0; font-size: 12px; line-height: 30px; font-family: Arial, sans-serif; }
         /* 照片表標題 */
         .photo-title { text-align: center; font-size: 22px; font-weight: bold; letter-spacing: 6px; margin: 4px 0 8px 0; }
         .doc-number-line { text-align: right; font-size: 12px; font-family: Arial, sans-serif; margin-bottom: 2px; }
@@ -444,135 +444,218 @@ function processImage(event, canvasId, btnId) {
 }
 
 
-/* ===== PDF 產生（html2canvas + jsPDF 混合方向） ===== */
+/* ===== PDF 原生向量文字與線條輸出 ===== */
+const PT_PER_MM = 72 / 25.4;
+const mm = value => value * PT_PER_MM;
+let pdfFontBytesPromise;
+
+function loadPdfFontBytes() {
+    if (!pdfFontBytesPromise) {
+        pdfFontBytesPromise = fetch('./NotoSansCJKtc-Regular.otf').then(response => {
+            if (!response.ok) throw new Error('中文字型載入失敗');
+            return response.arrayBuffer();
+        });
+    }
+    return pdfFontBytesPromise;
+}
+
+function wrapPdfText(text, font, size, maxWidth) {
+    const result = [];
+    String(text || '').split(/\r?\n/).forEach(paragraph => {
+        if (!paragraph) { result.push(''); return; }
+        let line = '';
+        for (const char of paragraph) {
+            const candidate = line + char;
+            if (line && font.widthOfTextAtSize(candidate, size) > maxWidth) {
+                result.push(line);
+                line = char;
+            } else {
+                line = candidate;
+            }
+        }
+        if (line) result.push(line);
+    });
+    return result;
+}
+
+function drawTextTop(page, text, font, size, x, top, width, options = {}) {
+    const lines = wrapPdfText(text, font, size, mm(width));
+    const lineHeight = size * (options.lineHeight || 1.35);
+    const blockHeight = lines.length * lineHeight;
+    const availableHeight = mm(options.height || 0);
+    let y = page.getHeight() - mm(top) - size;
+    if (options.valign === 'middle' && availableHeight > blockHeight) {
+        y -= (availableHeight - blockHeight) / 2;
+    }
+    for (const line of lines) {
+        const lineWidth = font.widthOfTextAtSize(line, size);
+        let drawX = mm(x);
+        if (options.align === 'center') drawX += (mm(width) - lineWidth) / 2;
+        if (options.align === 'right') drawX += mm(width) - lineWidth;
+        page.drawText(line, { x: drawX, y, size, font, color: PDFLib.rgb(0, 0, 0) });
+        y -= lineHeight;
+    }
+}
+
+function drawCell(page, text, font, size, x, top, width, height, options = {}) {
+    page.drawRectangle({
+        x: mm(x), y: page.getHeight() - mm(top + height),
+        width: mm(width), height: mm(height),
+        borderColor: PDFLib.rgb(0.12, 0.12, 0.12), borderWidth: 0.65,
+        color: options.fill ? PDFLib.rgb(0.96, 0.96, 0.96) : undefined
+    });
+    drawTextTop(page, text, font, size, x + 2.5, top + 1.5, width - 5, {
+        height: height - 3, align: options.align || 'left', valign: options.valign || 'middle', lineHeight: options.lineHeight
+    });
+}
+
+function drawVerticalStack(page, text, font, size, x, top, width, height) {
+    const chars = Array.from(text);
+    const lineHeight = size * 1.12;
+    let y = page.getHeight() - mm(top) - (mm(height) - chars.length * lineHeight) / 2 - size;
+    chars.forEach(char => {
+        const charWidth = font.widthOfTextAtSize(char, size);
+        page.drawText(char, { x: mm(x) + (mm(width) - charWidth) / 2, y, size, font });
+        y -= lineHeight;
+    });
+}
+
+async function embedDataImage(pdfDoc, dataUrl) {
+    if (!dataUrl) return null;
+    if (/^data:image\/png/i.test(dataUrl)) return pdfDoc.embedPng(dataUrl);
+    return pdfDoc.embedJpg(dataUrl);
+}
+
+function drawImageFit(page, image, x, top, width, height) {
+    if (!image) return;
+    const fitted = image.scaleToFit(mm(width), mm(height));
+    page.drawImage(image, {
+        x: mm(x) + (mm(width) - fitted.width) / 2,
+        y: page.getHeight() - mm(top) - (mm(height) + fitted.height) / 2,
+        width: fitted.width, height: fitted.height
+    });
+}
+
+function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function generatePDF() {
     const btn = document.querySelector('.btn-submit');
     const prog = document.getElementById('progress-msg');
+    const projectName = getProjectName();
+    if (!projectName) { alert('請填入工程名稱。'); return; }
+
     btn.disabled = true;
     btn.style.backgroundColor = '#6c757d';
-
-    // 日期轉換
-    const raw = getNoticeDateValue();
-    const [year, month, day] = raw.split('-');
-    const twYear = parseInt(year) - 1911;
-    const dateStr = `${twYear}年${parseInt(month)}月${parseInt(day)}日`;
-
-    const category    = document.getElementById('ui-category').value;
-    const catDisplay  = category === '施工' ? '■施工　□安衛' : '□施工　■安衛';
-    const projectName = getProjectName();
-    const docNumber   = document.getElementById('ui-docNumber').value.trim();
-
-    if (!projectName) {
-        alert('請填入工程名稱。');
-        btn.disabled = false;
-        btn.style.backgroundColor = '#dc3545';
-        return;
-    }
-
-    // ---- 填入第一頁 ----
-    document.getElementById('pdf-logo-p1').src = logoDataURL;
-    document.getElementById('pdf-docnum-p1').innerText = docNumber || '';
-    document.getElementById('pdf-date').innerText = dateStr;
-    document.getElementById('pdf-cat').innerText  = catDisplay;
-    document.getElementById('pdf-project').innerText  = projectName;
-    document.getElementById('pdf-handling').innerText = document.getElementById('ui-handling').value;
-    document.getElementById('pdf-deadline').innerText = document.getElementById('ui-deadline').value;
-    document.getElementById('pdf-supervisor').innerText = document.getElementById('ui-supervisor').value;
-    document.getElementById('pdf-contractor').innerText = document.getElementById('ui-contractor').value;
-
-    let reasonsHTML = '';
-    for (let i = 1; i <= defectCount; i++) {
-        const r = document.getElementById(`ui-reason-before-${i}`).value || '（未填寫事由）';
-        reasonsHTML += `${i}. ${r}<br>`;
-    }
-    document.getElementById('pdf-reasons').innerHTML = reasonsHTML;
-
-    // ---- 截圖第一頁（橫式 1060×750） ----
-    prog.innerText = '正在排版第 1 頁（通知單）…';
-    const page1el = document.getElementById('pdf-page1');
-    page1el.style.display = 'block';
-    // 等 logo 載入
-    await waitImgLoad(document.getElementById('pdf-logo-p1'));
-    const canvas1 = await html2canvas(page1el, { scale: 2, useCORS: true, logging: false });
-    page1el.style.display = 'none';
-
-    // ---- 建立 jsPDF（第一頁橫式） ----
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-    // 8mm 白邊，避免印表機吃邊
-    const mg = 8;
-    pdf.addImage(canvas1.toDataURL('image/jpeg', 0.95), 'JPEG', mg, mg, 297-mg*2, 210-mg*2);
-
-    // ---- 照片頁（直式，每個缺失一頁） ----
-    const photoEl  = document.getElementById('pdf-photo');
-    const photoTbl = document.getElementById('pdf-photo-table');
-
-    for (let i = 1; i <= defectCount; i++) {
-        prog.innerText = `正在排版第 ${i + 1} 頁（照片表 ${i}/${defectCount}）…`;
-
-        // 填入 LOGO 與文件編號
-        document.getElementById('pdf-logo-ph').src = logoDataURL;
-        document.getElementById('pdf-docnum').innerText = docNumber || '';
-
-        // 取得各階段照片與說明
-        const getImg = (stageKey) => {
-            const c = document.getElementById(`canvas-${stageKey}-${i}`);
-            return (c && c.style.display === 'block') ? c.toDataURL('image/jpeg', 0.85) : '';
-        };
-        const getTxt = (stageKey) => document.getElementById(`ui-reason-${stageKey}-${i}`).value || '';
-
-        const imgCell = (src) => src
-            ? `<img src="${src}" style="max-width:100%;max-height:255px;object-fit:contain;">`
-            : `<div class="photo-img-empty">（無照片）</div>`;
-
-        // 建立照片表 HTML
-        photoTbl.innerHTML = `
-            <tr>
-                <td class="photo-project-cell" rowspan="3">工程名稱：${projectName}</td>
-                <td class="photo-img-cell">${imgCell(getImg('before'))}</td>
-                <td class="photo-text-cell">
-                    <div class="photo-stage-lbl">缺失事項：</div>${getTxt('before')}
-                </td>
-            </tr>
-            <tr>
-                <td class="photo-img-cell">${imgCell(getImg('during'))}</td>
-                <td class="photo-text-cell">
-                    <div class="photo-stage-lbl">改善中：</div>${getTxt('during')}
-                </td>
-            </tr>
-            <tr>
-                <td class="photo-img-cell">${imgCell(getImg('after'))}</td>
-                <td class="photo-text-cell">
-                    <div class="photo-stage-lbl">改善後：</div>${getTxt('after')}
-                </td>
-            </tr>`;
-
-        photoEl.style.display = 'block';
-        // 等 LOGO 與所有照片圖片全部載入後再截圖
-        await waitImgLoad(document.getElementById('pdf-logo-ph'));
-        const allImgs = Array.from(photoEl.querySelectorAll('img'));
-        await Promise.all(allImgs.map(img => waitImgLoad(img)));
-        // 給瀏覽器一個 frame 完成 layout
-        await new Promise(r => requestAnimationFrame(() => setTimeout(r, 50)));
-        const photoCanvas = await html2canvas(photoEl, { scale: 2, useCORS: true, logging: false });
-        photoEl.style.display = 'none';
-
-        // 加入直式頁（8mm 白邊）
-        pdf.addPage('a4', 'portrait');
-        pdf.addImage(photoCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', mg, mg, 210-mg*2, 297-mg*2);
-    }
-
-    prog.innerText = '正在儲存 PDF…';
-    const fileName = `缺失改善通知單_${year}${month}${day}.pdf`;
-    const pdfBlob  = pdf.output('blob');
-
-    const deviceMode = document.querySelector('input[name="deviceMode"]:checked').value;
+    let completed = false;
 
     try {
-        if (deviceMode === 'mobile' && navigator.canShare && navigator.canShare({ files: [new File([pdfBlob], fileName, { type: 'application/pdf' })] })) {
+        const raw = getNoticeDateValue();
+        const [year, month, day] = raw.split('-');
+        const dateStr = `${parseInt(year) - 1911}年${parseInt(month)}月${parseInt(day)}日`;
+        const category = document.getElementById('ui-category').value;
+        const catDisplay = category === '施工' ? '■施工　□安衛' : '□施工　■安衛';
+        const docNumber = document.getElementById('ui-docNumber').value.trim();
+        const reasons = [];
+        for (let i = 1; i <= defectCount; i++) {
+            reasons.push(`${i}. ${document.getElementById(`ui-reason-before-${i}`).value || '（未填寫事由）'}`);
+        }
+
+        prog.innerText = '正在載入中文字型並建立向量 PDF…';
+        const pdfDoc = await PDFLib.PDFDocument.create();
+        pdfDoc.registerFontkit(window.fontkit);
+        const font = await pdfDoc.embedFont(await loadPdfFontBytes(), { subset: true });
+        const logo = await embedDataImage(pdfDoc, logoDataURL);
+        pdfDoc.setTitle('缺失改善通知單');
+        pdfDoc.setSubject(projectName);
+
+        // 第一頁：橫式 A4；文字、表格線皆為 PDF 向量物件
+        const page1 = pdfDoc.addPage([mm(297), mm(210)]);
+        drawImageFit(page1, logo, 101, 7, 95, 12);
+        drawTextTop(page1, '缺失改善通知單', font, 17, 8, 23, 281, { align: 'center' });
+        drawTextTop(page1, docNumber, font, 9, 220, 24.5, 69, { align: 'right' });
+
+        let y = 35;
+        drawCell(page1, `通知日期：${dateStr}`, font, 10, 8, y, 205, 14);
+        drawCell(page1, catDisplay, font, 10, 213, y, 76, 14, { align: 'right' });
+        y += 14;
+        drawCell(page1, '工程名稱', font, 10, 8, y, 25, 18, { fill: true, align: 'center' });
+        drawCell(page1, projectName, font, 10, 33, y, 256, 18);
+        y += 18;
+        drawCell(page1, '缺失事由', font, 10, 8, y, 25, 52, { fill: true, align: 'center' });
+        drawCell(page1, reasons.join('\n'), font, 10, 33, y, 256, 52, { valign: 'top' });
+        y += 52;
+        drawCell(page1, '處理方式', font, 10, 8, y, 25, 23, { fill: true, align: 'center' });
+        drawCell(page1, document.getElementById('ui-handling').value, font, 10, 33, y, 256, 23);
+        y += 23;
+        drawCell(page1, '改正期限', font, 10, 8, y, 25, 21, { fill: true, align: 'center' });
+        drawCell(page1, document.getElementById('ui-deadline').value, font, 10, 33, y, 256, 21);
+        y += 21;
+        drawCell(page1, '監造單位', font, 9, 8, y, 22, 38, { fill: true, align: 'center' });
+        drawCell(page1, document.getElementById('ui-supervisor').value, font, 10, 30, y, 111, 38, { valign: 'top' });
+        drawCell(page1, '施工單位', font, 9, 141, y, 22, 38, { fill: true, align: 'center' });
+        drawCell(page1, document.getElementById('ui-contractor').value, font, 10, 163, y, 126, 38, { valign: 'top' });
+
+        // 後續頁：直式 A4 照片表
+        const stages = [
+            ['before', '缺失事項：'], ['during', '改善中：'], ['after', '改善後：']
+        ];
+        for (let i = 1; i <= defectCount; i++) {
+            prog.innerText = `正在建立第 ${i + 1} 頁（照片表 ${i}/${defectCount}）…`;
+            const page = pdfDoc.addPage([mm(210), mm(297)]);
+            drawImageFit(page, logo, 58, 7, 94, 12);
+            drawTextTop(page, docNumber, font, 8.5, 135, 21, 66, { align: 'right' });
+            drawTextTop(page, '不合格改善照片表', font, 16, 8, 24, 194, { align: 'center' });
+
+            const tableTop = 35, tableHeight = 253, projectWidth = 18, imageWidth = 110, textWidth = 66;
+            page.drawRectangle({
+                x: mm(8), y: page.getHeight() - mm(tableTop + tableHeight), width: mm(projectWidth), height: mm(tableHeight),
+                borderColor: PDFLib.rgb(0.12, 0.12, 0.12), borderWidth: 0.65
+            });
+            drawVerticalStack(page, `工程名稱：${projectName}`, font, 7.5, 8, tableTop, projectWidth, tableHeight);
+
+            for (let row = 0; row < stages.length; row++) {
+                const [key, label] = stages[row];
+                const rowTop = tableTop + row * (tableHeight / 3);
+                const rowHeight = tableHeight / 3;
+                drawCell(page, '', font, 9, 8 + projectWidth, rowTop, imageWidth, rowHeight);
+                drawCell(page, `${label}\n${document.getElementById(`ui-reason-${key}-${i}`).value || ''}`, font, 9.5,
+                    8 + projectWidth + imageWidth, rowTop, textWidth, rowHeight, { valign: 'top', lineHeight: 1.55 });
+
+                const canvas = document.getElementById(`canvas-${key}-${i}`);
+                if (canvas && canvas.style.display === 'block') {
+                    const image = await pdfDoc.embedJpg(canvas.toDataURL('image/jpeg', 0.9));
+                    drawImageFit(page, image, 8 + projectWidth + 3, rowTop + 3, imageWidth - 6, rowHeight - 6);
+                } else {
+                    drawTextTop(page, '（無照片）', font, 9, 8 + projectWidth, rowTop, imageWidth, {
+                        align: 'center', valign: 'middle', height: rowHeight
+                    });
+                }
+            }
+        }
+
+        prog.innerText = '正在儲存 PDF…';
+        const pdfBytes = await pdfDoc.save();
+        const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const fileName = `缺失改善通知單_${year}${month}${day}.pdf`;
+        const deviceMode = document.querySelector('input[name="deviceMode"]:checked').value;
+
+        if (deviceMode === 'mobile' && navigator.canShare) {
+            prog.innerText = 'PDF 已建立，正在開啟分享選單…';
             const file = new File([pdfBlob], fileName, { type: 'application/pdf' });
-            await navigator.share({ files: [file], title: `敬請查收「${fileName}」` });
+            if (navigator.canShare({ files: [file] })) {
+                await navigator.share({ files: [file], title: `敬請查收「${fileName}」` });
+            } else {
+                downloadBlob(pdfBlob, fileName);
+            }
         } else if (deviceMode === 'desktop' && window.showSaveFilePicker) {
+            prog.innerText = 'PDF 已建立，請選擇儲存位置…';
             const handle = await window.showSaveFilePicker({
                 suggestedName: fileName,
                 types: [{ description: 'PDF 文件', accept: { 'application/pdf': ['.pdf'] } }]
@@ -581,32 +664,22 @@ async function generatePDF() {
             await writable.write(pdfBlob);
             await writable.close();
         } else {
-            pdf.save(fileName);
+            downloadBlob(pdfBlob, fileName);
         }
+        completed = true;
     } catch (err) {
         if (err.name === 'AbortError') {
             prog.innerText = '已取消匯出。';
         } else {
             console.error(err);
-            prog.innerText = '匯出失敗，請再試一次。';
+            prog.innerText = `匯出失敗：${err.message || '請再試一次。'}`;
         }
+    } finally {
+        btn.disabled = false;
+        btn.style.backgroundColor = '#dc3545';
+        btn.innerText = '📥 匯出正式 PDF 檔';
+        if (completed) prog.innerText = '✅ PDF 產出完畢！';
     }
-
-    btn.disabled = false;
-    btn.style.backgroundColor = '#dc3545';
-    btn.innerText = '📥 匯出正式 PDF 檔';
-    if (!['已取消匯出。', '匯出失敗，請再試一次。'].includes(prog.innerText)) {
-        prog.innerText = '✅ PDF 產出完畢！';
-    }
-}
-
-/* 等待 img 元素載入完成的輔助函數 */
-function waitImgLoad(imgEl) {
-    return new Promise(resolve => {
-        if (!imgEl || !imgEl.src || imgEl.complete) return resolve();
-        imgEl.onload  = resolve;
-        imgEl.onerror = resolve;
-    });
 }
 </script>
 </body>
